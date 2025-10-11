@@ -1,0 +1,57 @@
+# Compiled binaries
+simulation
+*.out
+*.exe
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+
+# Data files
+*.csv
+simulation_data.csv
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Visualization outputs
+*.png
+*.gif
+*.html
+three_body_*.html
+three_body_*.png
+three_body_*.gif
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.vs/
+*.sublime-*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.bak
+
+# Build directories
+build/
+dist/
+*.egg-info/
+cmake-build-*/
+
+# Debugging
+*.dSYM/
+*.log

@@ -3,7 +3,9 @@
 #include <OpenGL/gl.h>
 #include <OpenGL/glu.h>
 #include <cmath>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <vector>
 
 // Window dimensions
@@ -24,17 +26,106 @@ bool mousePressed = false;
 // Trail storage
 struct Trail {
     std::vector<Vector3D> positions;
-    int maxLength = 500;
+    int maxLength = 10000;  // Increased for longer trails
+    bool unlimited = false;  // If true, trails never fade
     
     void add(Vector3D pos) {
         positions.push_back(pos);
-        if (positions.size() > maxLength) {
+        if (!unlimited && positions.size() > maxLength) {
             positions.erase(positions.begin());
         }
+    }
+    
+    void clear() {
+        positions.clear();
     }
 };
 
 Trail trail1, trail2, trail3;
+
+// Replay functionality
+struct SimulationRecording {
+    struct Frame {
+        Vector3D pos1, pos2, pos3;
+    };
+    std::vector<Frame> frames;
+    int currentFrame = 0;
+    bool isRecording = true;
+    bool isReplaying = false;
+    
+    void record(const Vector3D& p1, const Vector3D& p2, const Vector3D& p3) {
+        if (isRecording && !isReplaying) {
+            frames.push_back({p1, p2, p3});
+        }
+    }
+    
+    void startReplay() {
+        if (frames.size() > 0) {
+            isReplaying = true;
+            isRecording = false;
+            currentFrame = 0;
+        }
+    }
+    
+    void stopReplay() {
+        isReplaying = false;
+        isRecording = true;
+    }
+    
+    bool getFrame(Vector3D& p1, Vector3D& p2, Vector3D& p3) {
+        if (isReplaying && currentFrame < frames.size()) {
+            p1 = frames[currentFrame].pos1;
+            p2 = frames[currentFrame].pos2;
+            p3 = frames[currentFrame].pos3;
+            currentFrame++;
+            if (currentFrame >= frames.size()) {
+                currentFrame = 0; // Loop replay
+            }
+            return true;
+        }
+        return false;
+    }
+    
+    void clear() {
+        frames.clear();
+        currentFrame = 0;
+    }
+};
+
+SimulationRecording recording;
+
+static bool parseVec3(const std::string& text, Vector3D& out) {
+    std::stringstream ss(text);
+    std::string item;
+    std::vector<double> parts;
+    while (std::getline(ss, item, ',')) {
+        try {
+            parts.push_back(std::stod(item));
+        } catch (...) {
+            return false;
+        }
+    }
+    if (parts.size() != 3) {
+        return false;
+    }
+    out = Vector3D(parts[0], parts[1], parts[2]);
+    return true;
+}
+
+static void printUsage() {
+    std::cout
+        << "Usage: threebody_opengl [options]\n"
+        << "Options:\n"
+        << "  --headless               Run simulation without OpenGL and write CSV\n"
+        << "  --dt <seconds>           Time step (default: 50.0)\n"
+        << "  --steps <count>          Number of steps (default: 2000)\n"
+        << "  --out <path>             Output CSV path (default: simulation_data.csv)\n"
+        << "  --record <path>          Record CSV during visual mode\n"
+        << "  --scale <value>          Visualization position scale (default: 1e-8)\n"
+        << "  --m1 <mass> --m2 <mass> --m3 <mass>  Masses in kg\n"
+        << "  --p1 x,y,z --p2 x,y,z --p3 x,y,z     Positions in meters\n"
+        << "  --v1 x,y,z --v2 x,y,z --v3 x,y,z     Velocities in m/s\n";
+}
 
 // Callbacks
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
@@ -42,9 +133,32 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         if (key == GLFW_KEY_ESCAPE) glfwSetWindowShouldClose(window, true);
         if (key == GLFW_KEY_SPACE) isPaused = !isPaused;
         if (key == GLFW_KEY_R) {
-            trail1.positions.clear();
-            trail2.positions.clear();
-            trail3.positions.clear();
+            // Clear trails
+            trail1.clear();
+            trail2.clear();
+            trail3.clear();
+            recording.clear();
+            recording.stopReplay();
+            std::cout << "Trails and recording cleared" << std::endl;
+        }
+        if (key == GLFW_KEY_T) {
+            // Toggle unlimited trails
+            trail1.unlimited = !trail1.unlimited;
+            trail2.unlimited = trail1.unlimited;
+            trail3.unlimited = trail1.unlimited;
+            std::cout << "Unlimited trails: " << (trail1.unlimited ? "ON" : "OFF") << std::endl;
+        }
+        if (key == GLFW_KEY_P) {
+            // Toggle replay mode
+            if (recording.isReplaying) {
+                recording.stopReplay();
+                isPaused = false;
+                std::cout << "Replay stopped" << std::endl;
+            } else {
+                recording.startReplay();
+                isPaused = false;
+                std::cout << "Replay started (" << recording.frames.size() << " frames)" << std::endl;
+            }
         }
         if (key == GLFW_KEY_EQUAL) timeScale *= 1.2f;  // Speed up
         if (key == GLFW_KEY_MINUS) timeScale /= 1.2f;  // Slow down
@@ -111,15 +225,22 @@ void drawSphere(float x, float y, float z, float radius, float r, float g, float
     glPopMatrix();
 }
 
-// Draw trail
+// Draw trail (no fade if unlimited)
 void drawTrail(const Trail& trail, float r, float g, float b) {
     if (trail.positions.size() < 2) return;
     
     glLineWidth(2.0f);
     glBegin(GL_LINE_STRIP);
     for (size_t i = 0; i < trail.positions.size(); i++) {
-        float alpha = (float)i / trail.positions.size();
-        glColor4f(r, g, b, alpha * 0.8f);
+        float alpha;
+        if (trail.unlimited) {
+            // No fade - constant opacity
+            alpha = 0.8f;
+        } else {
+            // Fade effect
+            alpha = (float)i / trail.positions.size() * 0.8f;
+        }
+        glColor4f(r, g, b, alpha);
         glVertex3f(trail.positions[i].getX(), 
                    trail.positions[i].getY(), 
                    trail.positions[i].getZ());
@@ -160,7 +281,137 @@ void drawAxes() {
     glEnd();
 }
 
-int main() {
+int main(int argc, char** argv) {
+    bool headless = false;
+    double mass1 = 1e26;
+    double mass2 = 1e26;
+    double mass3 = 1e26;
+    Vector3D p1_pos(1e8, 0, 0);
+    Vector3D p2_pos(-5e7, 8.66e7, 0);
+    Vector3D p3_pos(-5e7, -8.66e7, 0);
+    Vector3D v1_vel(0, 800, 0);
+    Vector3D v2_vel(-800 * 0.866, -800 * 0.5, 0);
+    Vector3D v3_vel(800 * 0.866, -800 * 0.5, 0);
+    double dt = 50.0;
+    int numSteps = 2000;
+    std::string outPath = "simulation_data.csv";
+    bool recordCsv = false;
+    std::string recordPath = "simulation_data.csv";
+    double scale = 1e-8;
+
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        auto requireValue = [&](const std::string& flag) -> std::string {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for " << flag << "\n";
+                printUsage();
+                std::exit(1);
+            }
+            return std::string(argv[++i]);
+        };
+
+        if (arg == "--headless") {
+            headless = true;
+        } else if (arg == "--dt") {
+            dt = std::stod(requireValue(arg));
+        } else if (arg == "--steps") {
+            numSteps = std::stoi(requireValue(arg));
+        } else if (arg == "--out") {
+            outPath = requireValue(arg);
+        } else if (arg == "--record") {
+            recordCsv = true;
+            recordPath = requireValue(arg);
+        } else if (arg == "--scale") {
+            scale = std::stod(requireValue(arg));
+        } else if (arg == "--m1") {
+            mass1 = std::stod(requireValue(arg));
+        } else if (arg == "--m2") {
+            mass2 = std::stod(requireValue(arg));
+        } else if (arg == "--m3") {
+            mass3 = std::stod(requireValue(arg));
+        } else if (arg == "--p1") {
+            if (!parseVec3(requireValue(arg), p1_pos)) {
+                std::cerr << "Invalid --p1 value\n";
+                return 1;
+            }
+        } else if (arg == "--p2") {
+            if (!parseVec3(requireValue(arg), p2_pos)) {
+                std::cerr << "Invalid --p2 value\n";
+                return 1;
+            }
+        } else if (arg == "--p3") {
+            if (!parseVec3(requireValue(arg), p3_pos)) {
+                std::cerr << "Invalid --p3 value\n";
+                return 1;
+            }
+        } else if (arg == "--v1") {
+            if (!parseVec3(requireValue(arg), v1_vel)) {
+                std::cerr << "Invalid --v1 value\n";
+                return 1;
+            }
+        } else if (arg == "--v2") {
+            if (!parseVec3(requireValue(arg), v2_vel)) {
+                std::cerr << "Invalid --v2 value\n";
+                return 1;
+            }
+        } else if (arg == "--v3") {
+            if (!parseVec3(requireValue(arg), v3_vel)) {
+                std::cerr << "Invalid --v3 value\n";
+                return 1;
+            }
+        } else if (arg == "--help" || arg == "-h") {
+            printUsage();
+            return 0;
+        } else {
+            std::cerr << "Unknown option: " << arg << "\n";
+            printUsage();
+            return 1;
+        }
+    }
+
+    Planet p1("Body1", 1.0, mass1, p1_pos);
+    Planet p2("Body2", 1.0, mass2, p2_pos);
+    Planet p3("Body3", 1.0, mass3, p3_pos);
+
+    Body body1(p1, Velocity(v1_vel));
+    Body body2(p2, Velocity(v2_vel));
+    Body body3(p3, Velocity(v3_vel));
+
+    ThreeBodySimulation sim(body1, body2, body3, dt);
+
+    if (headless) {
+        std::ofstream outfile(outPath);
+        outfile << "time,"
+                << "body1_x,body1_y,body1_z,body1_vx,body1_vy,body1_vz,"
+                << "body2_x,body2_y,body2_z,body2_vx,body2_vy,body2_vz,"
+                << "body3_x,body3_y,body3_z,body3_vx,body3_vy,body3_vz\n";
+
+        for (int i = 0; i < numSteps; i++) {
+            sim.step();
+            outfile << i * dt << ","
+                    << body1.getPlanet().getPosition().getX() << ","
+                    << body1.getPlanet().getPosition().getY() << ","
+                    << body1.getPlanet().getPosition().getZ() << ","
+                    << body1.getVelocity().getVelocity().getX() << ","
+                    << body1.getVelocity().getVelocity().getY() << ","
+                    << body1.getVelocity().getVelocity().getZ() << ","
+                    << body2.getPlanet().getPosition().getX() << ","
+                    << body2.getPlanet().getPosition().getY() << ","
+                    << body2.getPlanet().getPosition().getZ() << ","
+                    << body2.getVelocity().getVelocity().getX() << ","
+                    << body2.getVelocity().getVelocity().getY() << ","
+                    << body2.getVelocity().getVelocity().getZ() << ","
+                    << body3.getPlanet().getPosition().getX() << ","
+                    << body3.getPlanet().getPosition().getY() << ","
+                    << body3.getPlanet().getPosition().getZ() << ","
+                    << body3.getVelocity().getVelocity().getX() << ","
+                    << body3.getVelocity().getVelocity().getY() << ","
+                    << body3.getVelocity().getVelocity().getZ() << "\n";
+        }
+        std::cout << "Simulation complete! Data saved to " << outPath << std::endl;
+        return 0;
+    }
+
     // Initialize GLFW
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW" << std::endl;
@@ -198,27 +449,23 @@ int main() {
     glLightfv(GL_LIGHT0, GL_DIFFUSE, light_diffuse);
     
     // Initialize simulation (scaled for visualization)
-    double scale = 1e-8;  // Scale positions to fit in view
-    double mass = 1e26;
-    double radius = 1e8;
-    
-    Planet p1("Body1", 1.0, mass, Vector3D(radius, 0, 0));
-    Planet p2("Body2", 1.0, mass, Vector3D(-radius/2, radius*0.866, 0));
-    Planet p3("Body3", 1.0, mass, Vector3D(-radius/2, -radius*0.866, 0));
-    
-    double v_orbit = 800;
-    Body body1(p1, Velocity(Vector3D(0, v_orbit, 0)));
-    Body body2(p2, Velocity(Vector3D(-v_orbit*0.866, -v_orbit*0.5, 0)));
-    Body body3(p3, Velocity(Vector3D(v_orbit*0.866, -v_orbit*0.5, 0)));
-    
-    double dt = 50.0;
-    ThreeBodySimulation sim(body1, body2, body3, dt);
+    double simTime = 0.0;
+    std::ofstream recordFile;
+    if (recordCsv) {
+        recordFile.open(recordPath);
+        recordFile << "time,"
+                   << "body1_x,body1_y,body1_z,body1_vx,body1_vy,body1_vz,"
+                   << "body2_x,body2_y,body2_z,body2_vx,body2_vy,body2_vz,"
+                   << "body3_x,body3_y,body3_z,body3_vx,body3_vy,body3_vz\n";
+    }
     
     std::cout << "Controls:" << std::endl;
     std::cout << "  Mouse drag: Rotate camera" << std::endl;
     std::cout << "  Mouse scroll: Zoom in/out" << std::endl;
     std::cout << "  SPACE: Pause/Resume" << std::endl;
-    std::cout << "  R: Reset trails" << std::endl;
+    std::cout << "  R: Reset trails and recording" << std::endl;
+    std::cout << "  T: Toggle unlimited trails (no fade)" << std::endl;
+    std::cout << "  P: Play/Stop replay" << std::endl;
     std::cout << "  +/-: Speed up/slow down" << std::endl;
     std::cout << "  ESC: Exit" << std::endl;
     
@@ -248,16 +495,63 @@ int main() {
         
         gluLookAt(camX, camY, camZ, 0, 0, 0, 0, 1, 0);
         
-        // Update simulation
-        if (!isPaused) {
-            for (int i = 0; i < (int)(timeScale * 1); i++) {
+        // Update simulation or replay
+        Vector3D pos1, pos2, pos3;
+        
+        if (recording.isReplaying) {
+            // Replay mode - use recorded positions
+            if (recording.getFrame(pos1, pos2, pos3)) {
+                trail1.add(pos1);
+                trail2.add(pos2);
+                trail3.add(pos3);
+            }
+        } else if (!isPaused) {
+            // Normal simulation mode
+            int stepsThisFrame = (int)(timeScale * 1);
+            for (int i = 0; i < stepsThisFrame; i++) {
                 sim.step();
             }
+            simTime += stepsThisFrame * dt;
+            
+            // Get current positions
+            pos1 = body1.getPlanet().getPosition() * scale;
+            pos2 = body2.getPlanet().getPosition() * scale;
+            pos3 = body3.getPlanet().getPosition() * scale;
+
+            if (recordCsv) {
+                recordFile << simTime << ","
+                           << body1.getPlanet().getPosition().getX() << ","
+                           << body1.getPlanet().getPosition().getY() << ","
+                           << body1.getPlanet().getPosition().getZ() << ","
+                           << body1.getVelocity().getVelocity().getX() << ","
+                           << body1.getVelocity().getVelocity().getY() << ","
+                           << body1.getVelocity().getVelocity().getZ() << ","
+                           << body2.getPlanet().getPosition().getX() << ","
+                           << body2.getPlanet().getPosition().getY() << ","
+                           << body2.getPlanet().getPosition().getZ() << ","
+                           << body2.getVelocity().getVelocity().getX() << ","
+                           << body2.getVelocity().getVelocity().getY() << ","
+                           << body2.getVelocity().getVelocity().getZ() << ","
+                           << body3.getPlanet().getPosition().getX() << ","
+                           << body3.getPlanet().getPosition().getY() << ","
+                           << body3.getPlanet().getPosition().getZ() << ","
+                           << body3.getVelocity().getVelocity().getX() << ","
+                           << body3.getVelocity().getVelocity().getY() << ","
+                           << body3.getVelocity().getVelocity().getZ() << "\n";
+            }
+            
+            // Record for replay
+            recording.record(pos1, pos2, pos3);
             
             // Add to trails
-            trail1.add(body1.getPlanet().getPosition() * scale);
-            trail2.add(body2.getPlanet().getPosition() * scale);
-            trail3.add(body3.getPlanet().getPosition() * scale);
+            trail1.add(pos1);
+            trail2.add(pos2);
+            trail3.add(pos3);
+        } else {
+            // Paused - just get current positions
+            pos1 = body1.getPlanet().getPosition() * scale;
+            pos2 = body2.getPlanet().getPosition() * scale;
+            pos3 = body3.getPlanet().getPosition() * scale;
         }
         
         // Draw scene
@@ -271,11 +565,7 @@ int main() {
         drawTrail(trail3, 0.3f, 1.0f, 0.3f);
         glEnable(GL_LIGHTING);
         
-        // Draw bodies
-        Vector3D pos1 = body1.getPlanet().getPosition() * scale;
-        Vector3D pos2 = body2.getPlanet().getPosition() * scale;
-        Vector3D pos3 = body3.getPlanet().getPosition() * scale;
-        
+        // Draw bodies (use positions from simulation or replay)
         drawSphere(pos1.getX(), pos1.getY(), pos1.getZ(), 0.08f, 1.0f, 0.2f, 0.2f);
         drawSphere(pos2.getX(), pos2.getY(), pos2.getZ(), 0.08f, 0.2f, 0.2f, 1.0f);
         drawSphere(pos3.getX(), pos3.getY(), pos3.getZ(), 0.08f, 0.2f, 1.0f, 0.2f);

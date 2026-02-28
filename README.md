@@ -112,10 +112,10 @@ Outputs include:
 ## ML Workflow
 
 The reward function is theorised based on:
-- Radius violation penalty: how much the trajectory exceeds the allowed maximum system radius.
-- Separation violation penalty: how much the minimum body-to-body distance falls below the allowed threshold.
-- Energy drift penalty: how much total mechanical energy changes during the trajectory.
-- Stability failure penalty: an extra fixed negative penalty if the run is classified as unstable.
+- Radius violation penalty: It checks the largest distance of any body from the center of mass during the trajectory. If this exceeds `max_radius`, penalty increases proportionally.
+- Separation violation penalty: It checks the smallest distance between any pair of bodies over time. If this goes below `min_separation`, penalty increases proportionally.
+- Energy drift penalty: It measures how much total system energy changes from the start. More drift means a larger penalty (encourages physically consistent trajectories).
+- Stability failure penalty: If the run is marked unstable (max_radius too large or min_separation too small), it subtracts an extra 1.0 from reward.
 
 1) Generate dataset:
 

@@ -2,10 +2,13 @@
 #include <GLFW/glfw3.h>
 #include <OpenGL/gl.h>
 #include <OpenGL/glu.h>
+#include <array>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <unistd.h>
 #include <vector>
 
 // Window dimensions
@@ -16,7 +19,11 @@ const int HEIGHT = 900;
 float cameraDistance = 3.0f;
 float cameraAngleX = 30.0f;
 float cameraAngleY = 45.0f;
+float cameraTargetX = 0.0f;
+float cameraTargetY = 0.0f;
+float cameraTargetZ = 0.0f;
 bool isPaused = false;
+bool followCenterOfMass = false;
 float timeScale = 1.0f;
 
 // Mouse control
@@ -112,6 +119,24 @@ static bool parseVec3(const std::string& text, Vector3D& out) {
     return true;
 }
 
+static bool parseTriple(const std::string& text, std::array<double, 3>& out) {
+    std::stringstream ss(text);
+    std::string item;
+    std::vector<double> parts;
+    while (std::getline(ss, item, ',')) {
+        try {
+            parts.push_back(std::stod(item));
+        } catch (...) {
+            return false;
+        }
+    }
+    if (parts.size() != 3) {
+        return false;
+    }
+    out = {parts[0], parts[1], parts[2]};
+    return true;
+}
+
 static void printUsage() {
     std::cout
         << "Usage: threebody_opengl [options]\n"
@@ -122,13 +147,40 @@ static void printUsage() {
         << "  --out <path>             Output CSV path (default: simulation_data.csv)\n"
         << "  --record <path>          Record CSV during visual mode\n"
         << "  --scale <value>          Visualization position scale (default: 1e-8)\n"
+        << "  --mass-ratios a,b,c      Relative masses scaled by --mass-scale\n"
+        << "  --mass-scale <mass>      Base mass in kg for --mass-ratios (default: 1e26)\n"
         << "  --m1 <mass> --m2 <mass> --m3 <mass>  Masses in kg\n"
         << "  --p1 x,y,z --p2 x,y,z --p3 x,y,z     Positions in meters\n"
         << "  --v1 x,y,z --v2 x,y,z --v3 x,y,z     Velocities in m/s\n";
 }
 
 // Callbacks
+void panCamera(float rightStep, float upStep, float forwardStep) {
+    float panScale = 0.15f * cameraDistance;
+    float yaw = cameraAngleY * M_PI / 180.0f;
+    float forwardX = cos(yaw);
+    float forwardZ = sin(yaw);
+    float rightX = -sin(yaw);
+    float rightZ = cos(yaw);
+
+    cameraTargetX += panScale * (rightStep * rightX + forwardStep * forwardX);
+    cameraTargetY += panScale * upStep;
+    cameraTargetZ += panScale * (rightStep * rightZ + forwardStep * forwardZ);
+    followCenterOfMass = false;
+}
+
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (action == GLFW_PRESS || action == GLFW_REPEAT) {
+        if (key == GLFW_KEY_A) panCamera(-1.0f, 0.0f, 0.0f);
+        if (key == GLFW_KEY_D) panCamera(1.0f, 0.0f, 0.0f);
+        if (key == GLFW_KEY_W) panCamera(0.0f, 0.0f, 1.0f);
+        if (key == GLFW_KEY_S) panCamera(0.0f, 0.0f, -1.0f);
+        if (key == GLFW_KEY_Q) panCamera(0.0f, 1.0f, 0.0f);
+        if (key == GLFW_KEY_E) panCamera(0.0f, -1.0f, 0.0f);
+        if (key == GLFW_KEY_EQUAL) timeScale *= 1.2f;  // Speed up
+        if (key == GLFW_KEY_MINUS) timeScale /= 1.2f;  // Slow down
+    }
+
     if (action == GLFW_PRESS) {
         if (key == GLFW_KEY_ESCAPE) glfwSetWindowShouldClose(window, true);
         if (key == GLFW_KEY_SPACE) isPaused = !isPaused;
@@ -160,8 +212,17 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
                 std::cout << "Replay started (" << recording.frames.size() << " frames)" << std::endl;
             }
         }
-        if (key == GLFW_KEY_EQUAL) timeScale *= 1.2f;  // Speed up
-        if (key == GLFW_KEY_MINUS) timeScale /= 1.2f;  // Slow down
+        if (key == GLFW_KEY_F) {
+            followCenterOfMass = !followCenterOfMass;
+            std::cout << "Follow center of mass: " << (followCenterOfMass ? "ON" : "OFF") << std::endl;
+        }
+        if (key == GLFW_KEY_C) {
+            cameraTargetX = 0.0f;
+            cameraTargetY = 0.0f;
+            cameraTargetZ = 0.0f;
+            followCenterOfMass = false;
+            std::cout << "Camera target reset to origin" << std::endl;
+        }
     }
 }
 
@@ -298,6 +359,10 @@ int main(int argc, char** argv) {
     bool recordCsv = false;
     std::string recordPath = "simulation_data.csv";
     double scale = 1e-8;
+    double massScale = 1e26;
+    std::array<double, 3> massRatios = {1.0, 1.0, 1.0};
+    bool massRatiosProvided = false;
+    bool explicitMassesProvided = false;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -323,12 +388,23 @@ int main(int argc, char** argv) {
             recordPath = requireValue(arg);
         } else if (arg == "--scale") {
             scale = std::stod(requireValue(arg));
+        } else if (arg == "--mass-ratios") {
+            if (!parseTriple(requireValue(arg), massRatios)) {
+                std::cerr << "Invalid --mass-ratios value\n";
+                return 1;
+            }
+            massRatiosProvided = true;
+        } else if (arg == "--mass-scale") {
+            massScale = std::stod(requireValue(arg));
         } else if (arg == "--m1") {
             mass1 = std::stod(requireValue(arg));
+            explicitMassesProvided = true;
         } else if (arg == "--m2") {
             mass2 = std::stod(requireValue(arg));
+            explicitMassesProvided = true;
         } else if (arg == "--m3") {
             mass3 = std::stod(requireValue(arg));
+            explicitMassesProvided = true;
         } else if (arg == "--p1") {
             if (!parseVec3(requireValue(arg), p1_pos)) {
                 std::cerr << "Invalid --p1 value\n";
@@ -367,6 +443,41 @@ int main(int argc, char** argv) {
             printUsage();
             return 1;
         }
+    }
+
+    auto applyMassRatios = [&]() {
+        mass1 = massScale * massRatios[0];
+        mass2 = massScale * massRatios[1];
+        mass3 = massScale * massRatios[2];
+    };
+
+    auto ratiosArePositive = [&]() {
+        return massRatios[0] > 0.0 && massRatios[1] > 0.0 && massRatios[2] > 0.0;
+    };
+
+    if (massRatiosProvided && explicitMassesProvided) {
+        std::cerr << "Use either --mass-ratios or --m1/--m2/--m3, not both.\n";
+        return 1;
+    }
+
+    if (massRatiosProvided) {
+        if (!ratiosArePositive()) {
+            std::cerr << "--mass-ratios values must all be positive.\n";
+            return 1;
+        }
+        applyMassRatios();
+    } else if (!headless && !explicitMassesProvided && isatty(fileno(stdin))) {
+        std::cout << "Enter mass ratios for Body1, Body2, Body3 "
+                  << "(e.g. 1.0,0.5,0.3; press Enter for 1.0,1.0,1.0): ";
+        std::string line;
+        if (std::getline(std::cin, line) && !line.empty()) {
+            if (!parseTriple(line, massRatios) || !ratiosArePositive()) {
+                std::cerr << "Invalid mass ratios. Expected three positive numbers like 1.0,0.5,0.3\n";
+                return 1;
+            }
+        }
+        applyMassRatios();
+        std::cout << "Using masses (kg): " << mass1 << ", " << mass2 << ", " << mass3 << std::endl;
     }
 
     Planet p1("Body1", 1.0, mass1, p1_pos);
@@ -460,12 +571,16 @@ int main(int argc, char** argv) {
     }
     
     std::cout << "Controls:" << std::endl;
-    std::cout << "  Mouse drag: Rotate camera" << std::endl;
+    std::cout << "  Mouse drag: Orbit camera target" << std::endl;
     std::cout << "  Mouse scroll: Zoom in/out" << std::endl;
+    std::cout << "  W/A/S/D: Pan camera target" << std::endl;
+    std::cout << "  Q/E: Move camera target up/down" << std::endl;
     std::cout << "  SPACE: Pause/Resume" << std::endl;
     std::cout << "  R: Reset trails and recording" << std::endl;
     std::cout << "  T: Toggle unlimited trails (no fade)" << std::endl;
     std::cout << "  P: Play/Stop replay" << std::endl;
+    std::cout << "  F: Toggle follow center of mass" << std::endl;
+    std::cout << "  C: Reset camera target to origin" << std::endl;
     std::cout << "  +/-: Speed up/slow down" << std::endl;
     std::cout << "  ESC: Exit" << std::endl;
     
@@ -474,26 +589,6 @@ int main(int argc, char** argv) {
         // Clear buffers
         glClearColor(0.05f, 0.05f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        
-        // Set up projection
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        float aspect = (float)WIDTH / HEIGHT;
-        float fov = 45.0f;
-        float nearPlane = 0.1f;
-        float farPlane = 100.0f;
-        float top = nearPlane * tan(fov * M_PI / 360.0);
-        glFrustum(-top * aspect, top * aspect, -top, top, nearPlane, farPlane);
-        
-        // Set up camera
-        glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
-        
-        float camX = cameraDistance * cos(cameraAngleX * M_PI / 180.0) * cos(cameraAngleY * M_PI / 180.0);
-        float camY = cameraDistance * sin(cameraAngleX * M_PI / 180.0);
-        float camZ = cameraDistance * cos(cameraAngleX * M_PI / 180.0) * sin(cameraAngleY * M_PI / 180.0);
-        
-        gluLookAt(camX, camY, camZ, 0, 0, 0, 0, 1, 0);
         
         // Update simulation or replay
         Vector3D pos1, pos2, pos3;
@@ -553,6 +648,52 @@ int main(int argc, char** argv) {
             pos2 = body2.getPlanet().getPosition() * scale;
             pos3 = body3.getPlanet().getPosition() * scale;
         }
+
+        float targetX = cameraTargetX;
+        float targetY = cameraTargetY;
+        float targetZ = cameraTargetZ;
+        if (followCenterOfMass) {
+            double totalMass =
+                body1.getPlanet().getMass() + body2.getPlanet().getMass() + body3.getPlanet().getMass();
+            targetX = static_cast<float>(
+                (pos1.getX() * body1.getPlanet().getMass() +
+                 pos2.getX() * body2.getPlanet().getMass() +
+                 pos3.getX() * body3.getPlanet().getMass()) /
+                totalMass
+            );
+            targetY = static_cast<float>(
+                (pos1.getY() * body1.getPlanet().getMass() +
+                 pos2.getY() * body2.getPlanet().getMass() +
+                 pos3.getY() * body3.getPlanet().getMass()) /
+                totalMass
+            );
+            targetZ = static_cast<float>(
+                (pos1.getZ() * body1.getPlanet().getMass() +
+                 pos2.getZ() * body2.getPlanet().getMass() +
+                 pos3.getZ() * body3.getPlanet().getMass()) /
+                totalMass
+            );
+        }
+
+        // Set up projection
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        float aspect = (float)WIDTH / HEIGHT;
+        float fov = 45.0f;
+        float nearPlane = 0.1f;
+        float farPlane = 100.0f;
+        float top = nearPlane * tan(fov * M_PI / 360.0);
+        glFrustum(-top * aspect, top * aspect, -top, top, nearPlane, farPlane);
+        
+        // Set up camera
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        
+        float camX = targetX + cameraDistance * cos(cameraAngleX * M_PI / 180.0) * cos(cameraAngleY * M_PI / 180.0);
+        float camY = targetY + cameraDistance * sin(cameraAngleX * M_PI / 180.0);
+        float camZ = targetZ + cameraDistance * cos(cameraAngleX * M_PI / 180.0) * sin(cameraAngleY * M_PI / 180.0);
+        
+        gluLookAt(camX, camY, camZ, targetX, targetY, targetZ, 0, 1, 0);
         
         // Draw scene
         drawGrid();

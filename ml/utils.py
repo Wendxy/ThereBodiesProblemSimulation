@@ -88,23 +88,37 @@ def stability_metrics(
     # positions: (T, 3, 3), velocities: (T, 3, 3)
     com = np.sum(positions * masses[None, :, None], axis=1) / np.sum(masses)
     rel_pos = positions - com[:, None, :]
-    max_dist = np.max(np.linalg.norm(rel_pos, axis=-1))
+    radii = np.linalg.norm(rel_pos, axis=-1)
+    max_radius_over_time = np.max(radii, axis=1)
+    max_dist = np.max(max_radius_over_time)
 
-    min_sep = math.inf
-    for t in range(positions.shape[0]):
-        for i in range(3):
-            for j in range(i + 1, 3):
-                d = np.linalg.norm(positions[t, j] - positions[t, i])
-                min_sep = min(min_sep, d)
+    min_sep_over_time = np.full(positions.shape[0], math.inf, dtype=np.float64)
+    for i in range(3):
+        for j in range(i + 1, 3):
+            d = np.linalg.norm(positions[:, j] - positions[:, i], axis=1)
+            min_sep_over_time = np.minimum(min_sep_over_time, d)
+    min_sep = float(np.min(min_sep_over_time))
 
     energies = np.array(
         [compute_energy(positions[t], velocities[t], masses) for t in range(positions.shape[0])]
     )
     energy_drift = float(np.max(np.abs(energies - energies[0])) / (abs(energies[0]) + 1e-12))
+    bound_fraction = float(np.mean(energies < 0.0))
+    survival_mask = (max_radius_over_time <= max_radius) & (min_sep_over_time >= min_separation)
+    survival_fraction = float(np.mean(survival_mask))
+
+    window = max(1, positions.shape[0] // 10)
+    start_radius = float(np.mean(max_radius_over_time[:window]))
+    end_radius = float(np.mean(max_radius_over_time[-window:]))
+    radius_growth = end_radius / (start_radius + 1e-12)
 
     return {
         "max_radius": float(max_dist),
-        "min_separation": float(min_sep),
+        "final_max_radius": float(max_radius_over_time[-1]),
+        "min_separation": min_sep,
         "energy_drift": energy_drift,
-        "stable": float(max_dist <= max_radius and min_sep >= min_separation),
+        "bound_fraction": bound_fraction,
+        "survival_fraction": survival_fraction,
+        "radius_growth": float(radius_growth),
+        "stable": float(survival_fraction == 1.0),
     }

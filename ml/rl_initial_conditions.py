@@ -1,6 +1,7 @@
 import argparse
 import os
 import subprocess
+import sys
 from typing import Tuple
 
 import numpy as np
@@ -35,6 +36,19 @@ def fmt_vec(v: np.ndarray) -> str:
     return f"{v[0]:.6e},{v[1]:.6e},{v[2]:.6e}"
 
 
+def parse_mass_ratios(text: str) -> np.ndarray:
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError("mass ratios must be three comma-separated numbers, e.g. 1.0,0.5,0.3")
+    try:
+        ratios = np.array([float(p) for p in parts], dtype=np.float64)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("mass ratios must be numeric") from exc
+    if np.any(ratios <= 0.0):
+        raise argparse.ArgumentTypeError("mass ratios must all be positive")
+    return ratios
+
+
 def run_episode(
     sim_bin: str,
     out_path: str,
@@ -44,7 +58,7 @@ def run_episode(
     positions: np.ndarray,
     velocities: np.ndarray,
     headless: bool,
-    scale: float = 1e-8,
+    scale: float = 2e-11,
     record: bool = False,
 ) -> None:
     cmd = [
@@ -94,12 +108,26 @@ def score_episode(
     velocities = np.stack([data["v1"], data["v2"], data["v3"]], axis=1)
     metrics = stability_metrics(positions, velocities, masses, max_radius, min_separation)
 
-    penalty = 0.0
-    penalty += max(0.0, metrics["max_radius"] - max_radius) / max_radius
-    penalty += max(0.0, min_separation - metrics["min_separation"]) / min_separation
-    penalty += metrics["energy_drift"]
+    radius_penalty = max(0.0, metrics["max_radius"] - max_radius) / max_radius
+    separation_penalty = max(0.0, min_separation - metrics["min_separation"]) / min_separation
+    drift_penalty = metrics["energy_drift"]
+    survival_penalty = 1.0 - metrics["survival_fraction"]
+    unbound_penalty = 1.0 - metrics["bound_fraction"]
+    growth_penalty = max(0.0, metrics["radius_growth"] - 1.0)
 
-    reward = 1.0 - penalty
+    compact_bonus = max(0.0, 1.0 - metrics["final_max_radius"] / max_radius)
+    reward = metrics["survival_fraction"]
+    reward += 0.5 * metrics["bound_fraction"]
+    reward += 0.25 * compact_bonus
+
+    penalty = radius_penalty
+    penalty += separation_penalty
+    penalty += drift_penalty
+    penalty += 1.5 * survival_penalty
+    penalty += 0.75 * unbound_penalty
+    penalty += 0.5 * growth_penalty
+    reward -= penalty
+
     if metrics["stable"] < 0.5:
         reward -= 1.0
     return float(reward), metrics
@@ -111,21 +139,41 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, default=200)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--dt", type=float, default=200.0)
-    parser.add_argument("--steps", type=int, default=2000)
+    parser.add_argument("--steps", type=int, default=5000)
     parser.add_argument("--mass-scale", type=float, default=1.0e30)
+    parser.add_argument(
+        "--mass-ratios",
+        type=parse_mass_ratios,
+        default=np.array([1.0, 0.6, 0.3], dtype=np.float64),
+        help="Comma-separated relative masses, e.g. 1.0,0.5,0.3",
+    )
     parser.add_argument("--max-radius", type=float, default=2.0e11)
     parser.add_argument("--min-separation", type=float, default=1.0e9)
     parser.add_argument("--out-dir", default="ml/rl_runs")
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--visualize-best", action="store_true")
-    parser.add_argument("--visual-scale", type=float, default=1e-8)
+    parser.add_argument("--visual-scale", type=float, default=2e-11)
     parser.add_argument("--visual-out", default="ml/rl_runs/best_visual.csv")
     args = parser.parse_args()
+
+    if "--mass-ratios" not in sys.argv and sys.stdin.isatty():
+        default_text = ",".join(f"{x:.6g}" for x in args.mass_ratios)
+        entered = input(
+            f"Enter mass ratios for RL/simulation (e.g. 1.0,0.5,0.3; press Enter for {default_text}): "
+        ).strip()
+        if entered:
+            args.mass_ratios = parse_mass_ratios(entered)
 
     os.makedirs(args.out_dir, exist_ok=True)
     rng = np.random.default_rng(123)
 
-    masses = args.mass_scale * np.array([1.0, 0.6, 0.3], dtype=np.float64)
+    masses = args.mass_scale * args.mass_ratios
+    print(
+        "Using mass ratios:",
+        ",".join(f"{x:.6g}" for x in args.mass_ratios),
+        "| masses (kg):",
+        ",".join(f"{x:.6e}" for x in masses),
+    )
 
     device = torch.device("cpu")
     policy = Policy().to(device)
@@ -189,7 +237,9 @@ def main() -> None:
         print(
             f"Episode {ep+1:03d} | reward={np.mean(rewards):.4f} | "
             f"best_stable={best['stable']:.0f} max_r={best['max_radius']:.3e} "
-            f"min_sep={best['min_separation']:.3e} drift={best['energy_drift']:.3e}"
+            f"final_r={best['final_max_radius']:.3e} min_sep={best['min_separation']:.3e} "
+            f"bound={best['bound_fraction']:.2f} survive={best['survival_fraction']:.2f} "
+            f"drift={best['energy_drift']:.3e}"
         )
 
     if args.visualize_best and best_positions is not None:

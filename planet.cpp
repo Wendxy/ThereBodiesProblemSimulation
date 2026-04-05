@@ -67,63 +67,41 @@ ThreeBodySimulation::ThreeBodySimulation(Body& body1, Body& body2, Body& body3, 
     : body1(body1), body2(body2), body3(body3), dt(dt) {}
 
 void ThreeBodySimulation::calculateForces() {
-    // Get positions
-    Vector3D r1 = body1.getPlanet().getPosition();
-    Vector3D r2 = body2.getPlanet().getPosition();
-    Vector3D r3 = body3.getPlanet().getPosition();
-    
-    // Get masses
-    double m1 = body1.getPlanet().getMass();
-    double m2 = body2.getPlanet().getMass();
-    double m3 = body3.getPlanet().getMass();
-    
-    // Calculate force on body1
-    Vector3D r12 = r2 - r1;
-    Vector3D r13 = r3 - r1;
-    double d12 = r12.magnitude();
-    double d13 = r13.magnitude();
-    Vector3D F1 = r12 * (G * m1 * m2 / (d12 * d12 * d12)) + 
-                  r13 * (G * m1 * m3 / (d13 * d13 * d13));
-    
-    // Calculate force on body2
-    Vector3D r21 = r1 - r2;
-    Vector3D r23 = r3 - r2;
-    double d21 = r21.magnitude();
-    double d23 = r23.magnitude();
-    Vector3D F2 = r21 * (G * m2 * m1 / (d21 * d21 * d21)) + 
-                  r23 * (G * m2 * m3 / (d23 * d23 * d23));
-    
-    // Calculate force on body3
-    Vector3D r31 = r1 - r3;
-    Vector3D r32 = r2 - r3;
-    double d31 = r31.magnitude();
-    double d32 = r32.magnitude();
-    Vector3D F3 = r31 * (G * m3 * m1 / (d31 * d31 * d31)) + 
-                  r32 * (G * m3 * m2 / (d32 * d32 * d32));
-    
-    // Set forces
+    auto pairForce = [&](const Body& source, const Body& other) {
+        Vector3D r = other.getPlanet().getPosition() - source.getPlanet().getPosition();
+        double d = r.magnitude();
+        if (d == 0.0) {
+            return Vector3D(0, 0, 0);
+        }
+        return r * (G * source.getPlanet().getMass() * other.getPlanet().getMass() / (d * d * d));
+    };
+
+    Vector3D F1 = pairForce(body1, body2) + pairForce(body1, body3);
+    Vector3D F2 = pairForce(body2, body1) + pairForce(body2, body3);
+    Vector3D F3 = pairForce(body3, body1) + pairForce(body3, body2);
+
     body1.setForce(Force(F1));
     body2.setForce(Force(F2));
     body3.setForce(Force(F3));
 }
 
-void ThreeBodySimulation::updateVelocities() {
-    // v = v + a*dt, where a = F/m
+void ThreeBodySimulation::applyVelocityKick(double stepDt) {
+    // Velocity-Verlet kick: v = v + a * dt_segment
     Vector3D v1 = body1.getVelocity().getVelocity() + 
-                  body1.getForce().getForce() / body1.getPlanet().getMass() * dt;
+                  body1.getForce().getForce() / body1.getPlanet().getMass() * stepDt;
     body1.getVelocity().setVelocity(v1);
     
     Vector3D v2 = body2.getVelocity().getVelocity() + 
-                  body2.getForce().getForce() / body2.getPlanet().getMass() * dt;
+                  body2.getForce().getForce() / body2.getPlanet().getMass() * stepDt;
     body2.getVelocity().setVelocity(v2);
     
     Vector3D v3 = body3.getVelocity().getVelocity() + 
-                  body3.getForce().getForce() / body3.getPlanet().getMass() * dt;
+                  body3.getForce().getForce() / body3.getPlanet().getMass() * stepDt;
     body3.getVelocity().setVelocity(v3);
 }
 
 void ThreeBodySimulation::updatePositions() {
-    // r = r + v*dt
+    // Drift using the half-step velocity from velocity-Verlet.
     body1.getPlanet().setPosition(body1.getPlanet().getPosition() + 
                                    body1.getVelocity().getVelocity() * dt);
     body2.getPlanet().setPosition(body2.getPlanet().getPosition() + 
@@ -134,6 +112,8 @@ void ThreeBodySimulation::updatePositions() {
 
 void ThreeBodySimulation::step() {
     calculateForces();
-    updateVelocities();
+    applyVelocityKick(0.5 * dt);
     updatePositions();
+    calculateForces();
+    applyVelocityKick(0.5 * dt);
 }

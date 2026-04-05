@@ -66,10 +66,11 @@ bash run_all.sh
 This will:
 
 1. Build `threebody_opengl`
-2. Generate ML dataset in `ml/data`
-3. Train model to `ml/model.pt` (if `torch` is available)
-4. Run RL episodes in `ml/rl_runs` (if `torch` is available)
-5. Launch visual simulation window
+2. Prompt once for mass ratios such as `1.0,0.5,0.3`
+3. Generate ML dataset in `ml/data`
+4. Train model to `ml/model.pt` (if `torch` is available)
+5. Run RL episodes in `ml/rl_runs` using those mass ratios (if `torch` is available)
+6. Launch a visual simulation of the best RL candidate
 
 ## Run Simulator Only
 
@@ -77,6 +78,12 @@ Visual mode:
 
 ```bash
 ./threebody_opengl --scale 2e-8
+```
+
+If you launch visual mode without explicit masses, it will prompt for three mass ratios such as `1.0,0.5,0.3` and scale them from the simulator's base mass. You can also pass them directly:
+
+```bash
+./threebody_opengl --scale 2e-8 --mass-ratios 1.0,0.5,0.3
 ```
 
 Headless mode (write CSV):
@@ -132,7 +139,7 @@ python3 ml/train_pinn.py --data-dir ml/data --epochs 30 --out ml/model.pt
 3) Search stable initial conditions with RL:
 
 ```bash
-python3 ml/rl_initial_conditions.py --episodes 200 --batch 8 --out-dir ml/rl_runs
+python3 ml/rl_initial_conditions.py --episodes 200 --batch 8 --mass-ratios 1.0,0.5,0.3 --out-dir ml/rl_runs
 ```
 
 Optional best-candidate visual playback:
@@ -141,4 +148,3 @@ Optional best-candidate visual playback:
 python3 ml/rl_initial_conditions.py --episodes 200 --batch 8 \
   --out-dir ml/rl_runs --visualize-best --visual-out ml/rl_runs/best_visual.csv
 ```
-

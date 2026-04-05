@@ -8,6 +8,8 @@ SIM_BIN="./threebody_opengl"
 DATA_DIR="ml/data"
 MODEL_PATH="ml/model.pt"
 RL_DIR="ml/rl_runs"
+RL_VISUALIZED=0
+MASS_RATIOS="${MASS_RATIOS:-1.0,0.6,0.3}"
 
 echo "== Build =="
 if ! command -v g++ >/dev/null 2>&1; then
@@ -24,6 +26,16 @@ else
   g++ -std=c++17 threebody_opengl.cpp planet.cpp -o "$SIM_BIN" \
     -lglfw -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo
 fi
+
+if [[ -t 0 ]]; then
+  read -r -p "Enter mass ratios for RL/simulation (e.g. 1.0,0.5,0.3; press Enter for ${MASS_RATIOS}): " INPUT_MASS_RATIOS
+  if [[ -n "${INPUT_MASS_RATIOS}" ]]; then
+    MASS_RATIOS="${INPUT_MASS_RATIOS}"
+  fi
+fi
+
+echo "== Mass Ratios =="
+echo "Using mass ratios: ${MASS_RATIOS}"
 
 echo "== Dataset =="
 python3 ml/generate_dataset.py --num-trajectories 10 --steps 500 --dt 200.0
@@ -45,14 +57,18 @@ import torch
 print(torch.__version__)
 PY
 then
-  python3 ml/rl_initial_conditions.py --episodes 20 --batch 4 --steps 500 --dt 200 \
-    --out-dir "$RL_DIR" --visualize-best --visual-scale 2e-8 --visual-out "$RL_DIR/best_visual.csv"
+  python3 ml/rl_initial_conditions.py --episodes 20 --batch 4 --steps 2000 --dt 200 \
+    --mass-ratios "$MASS_RATIOS" \
+    --out-dir "$RL_DIR" --visualize-best --visual-scale 2e-11 --visual-out "$RL_DIR/best_visual.csv"
+  RL_VISUALIZED=1
 else
   echo "Skipping RL: torch import failed."
 fi
 
-echo "== Visual Run =="
-echo "Launching visual mode. Close the window to finish."
-"$SIM_BIN" --scale 2e-8 --record "$RL_DIR/visual.csv"
+if [[ "$RL_VISUALIZED" -eq 0 ]]; then
+  echo "== Visual Run =="
+  echo "Launching default visual mode. Close the window to finish."
+  "$SIM_BIN" --scale 2e-8 --mass-ratios "$MASS_RATIOS" --record "$RL_DIR/visual.csv"
+fi
 
 echo "Done."

@@ -11,6 +11,7 @@
 // 10. update the force of the planet
 
 #include "planet.hpp"
+#include <array>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -34,6 +35,24 @@ static bool parseVec3(const std::string& text, Vector3D& out) {
     return true;
 }
 
+static bool parseTriple(const std::string& text, std::array<double, 3>& out) {
+    std::stringstream ss(text);
+    std::string item;
+    std::vector<double> parts;
+    while (std::getline(ss, item, ',')) {
+        try {
+            parts.push_back(std::stod(item));
+        } catch (...) {
+            return false;
+        }
+    }
+    if (parts.size() != 3) {
+        return false;
+    }
+    out = {parts[0], parts[1], parts[2]};
+    return true;
+}
+
 static void printUsage() {
     std::cout
         << "Usage: threebodiessimulation [options]\n"
@@ -41,6 +60,8 @@ static void printUsage() {
         << "  --dt <seconds>            Time step (default: 100.0)\n"
         << "  --steps <count>           Number of steps (default: 10000)\n"
         << "  --out <path>              Output CSV path (default: simulation_data.csv)\n"
+        << "  --mass-ratios a,b,c       Relative masses scaled by --mass-scale\n"
+        << "  --mass-scale <mass>       Base mass in kg for --mass-ratios (default: 1.989e30)\n"
         << "  --m1 <mass> --m2 <mass> --m3 <mass>  Masses in kg\n"
         << "  --p1 x,y,z --p2 x,y,z --p3 x,y,z     Positions in meters\n"
         << "  --v1 x,y,z --v2 x,y,z --v3 x,y,z     Velocities in m/s\n";
@@ -60,6 +81,10 @@ int main(int argc, char** argv) {
     double dt = 100.0;  // seconds
     int numSteps = 10000;
     std::string outPath = "simulation_data.csv";
+    double massScale = m1;
+    std::array<double, 3> massRatios = {1.0, m2 / m1, m3 / m1};
+    bool massRatiosProvided = false;
+    bool explicitMassesProvided = false;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -78,12 +103,23 @@ int main(int argc, char** argv) {
             numSteps = std::stoi(requireValue(arg));
         } else if (arg == "--out") {
             outPath = requireValue(arg);
+        } else if (arg == "--mass-ratios") {
+            if (!parseTriple(requireValue(arg), massRatios)) {
+                std::cerr << "Invalid --mass-ratios value\n";
+                return 1;
+            }
+            massRatiosProvided = true;
+        } else if (arg == "--mass-scale") {
+            massScale = std::stod(requireValue(arg));
         } else if (arg == "--m1") {
             m1 = std::stod(requireValue(arg));
+            explicitMassesProvided = true;
         } else if (arg == "--m2") {
             m2 = std::stod(requireValue(arg));
+            explicitMassesProvided = true;
         } else if (arg == "--m3") {
             m3 = std::stod(requireValue(arg));
+            explicitMassesProvided = true;
         } else if (arg == "--p1") {
             if (!parseVec3(requireValue(arg), p1_pos)) {
                 std::cerr << "Invalid --p1 value\n";
@@ -122,6 +158,20 @@ int main(int argc, char** argv) {
             printUsage();
             return 1;
         }
+    }
+
+    if (massRatiosProvided && explicitMassesProvided) {
+        std::cerr << "Use either --mass-ratios or --m1/--m2/--m3, not both.\n";
+        return 1;
+    }
+    if (massRatiosProvided) {
+        if (massRatios[0] <= 0.0 || massRatios[1] <= 0.0 || massRatios[2] <= 0.0) {
+            std::cerr << "--mass-ratios values must all be positive.\n";
+            return 1;
+        }
+        m1 = massScale * massRatios[0];
+        m2 = massScale * massRatios[1];
+        m3 = massScale * massRatios[2];
     }
 
     // Create planets with initial positions (radius, mass, position)
@@ -175,7 +225,7 @@ int main(int argc, char** argv) {
     }
     
     outfile.close();
-    std::cout << "\nSimulation complete! Data saved to simulation_data.csv" << std::endl;
+    std::cout << "\nSimulation complete! Data saved to " << outPath << std::endl;
     
     return 0;
 }

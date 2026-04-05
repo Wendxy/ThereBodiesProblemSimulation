@@ -77,7 +77,7 @@ class ThreeBodySimulation {
     public:
         ThreeBodySimulation(Body& body1, Body& body2, Body& body3, double dt);
         void calculateForces();
-        void updateVelocities();
+        void applyVelocityKick(double stepDt);
         void updatePositions();
         void step();
     private:
@@ -89,4 +89,3 @@ class ThreeBodySimulation {
 };
 
 #endif // PLANET_HPP
-
